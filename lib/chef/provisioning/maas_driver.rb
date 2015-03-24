@@ -31,10 +31,12 @@ module Chef::Provisioning
 
     def prepare_access_token(oauth_token, oauth_token_secret, consumer_key, consumer_secret)
 
+      site = File.join(maas_url,"api/1.0/")
+
       consumer = OAuth::Consumer.new( consumer_key,
                                       consumer_secret,
                                       {
-                                        :site => maas_url+"api/1.0/",
+                                        :site => site,
                                         :scheme => :header,
                                         :signature_method => "PLAINTEXT"
                                       })
@@ -60,20 +62,20 @@ module Chef::Provisioning
       config[:knife][key]
     end
 
-    def post(path, op, options)
-      path = "#{path}/" if !path.end_with?("/")
+    def post(path, op, options = nil)
+      path = File.join('/', path, '/')
       request_options = { 'op' => op }
       request_options.merge!(options) if options
-      access_token.request(:post, path, request_options)
+      response = access_token.request(:post, path, request_options)
       JSON.parse(response.body)
     end
 
     def get(path, op = nil, options = nil)
-      path = "#{path}/" if !path.end_with?("/")
+      path = File.join('/', path, '/')
       request_options = {}
       request_options['op'] = op if op
       request_options.merge!(options) if options
-      access_token.request(:get, path, request_options)
+      response = access_token.request(:get, path, request_options)
       JSON.parse(response.body)
     end
 
@@ -83,7 +85,7 @@ module Chef::Provisioning
       if !machine_spec.reference || !machine_spec.reference['system_id']
         action_handler.perform_action "Acquiring server #{machine_spec.name} with options #{machine_options}" do
 
-          node = post("nodes", :acquire, machine_options[:acquire_options])
+          node = post("/nodes", :acquire, machine_options[:deploy_options])
 
           machine_spec.reference = {
             'driver_url' => driver_url,
@@ -91,12 +93,12 @@ module Chef::Provisioning
             'system_id' => node['system_id']
           }
 
-          machine_spec.save
+          machine_spec.save(action_handler)
         end
 
       else
         # If we have a system_id, but it does not exist in MAAS or is not in an acquired state, report that to the user.
-        node = get("nodes/#{machine_spec.reference['system_id']}")
+        node = get("/nodes/#{machine_spec.reference['system_id']}")
         if !node
           raise "Node with ID #{machine_spec.reference['system_id']} does not exist!"
         end
@@ -105,21 +107,32 @@ module Chef::Provisioning
         end
       end
 
+      print(".")
+      sleep 30
+      print(".")
+
       # If the node has not been deployed (if it is in READY state), we get it up and deployed
-      if node['state'] == '4'
-        post("nodes/#{node['system_id']}", :start, machine_options[:deploy_options])
+      node = get("/nodes/#{machine_spec.reference['system_id']}")
+      if node['substatus'] == 10
+        post("/nodes/#{machine_spec.reference['system_id']}", :start)
       end
     end
 
     def ready_machine(action_handler, machine_spec, machine_options)
+
+      print(".")
+      sleep 30
+      print(".")
+
       system_id = machine_spec.reference['system_id']
+      node = get("/nodes/#{machine_spec.reference['system_id']}")
       # If the machine is in a stopped state, we start it. TODO
-      if node['state'] == 'READY'
-        post("nodes/#{node['system_id']}", :start, machine_options[:deploy_options])
+      if node['substatus'] == 10
+        post("/nodes/#{machine_spec.reference['system_id']}", :start)
       end
 
       # Wait for the machine to be started / deployed / whatever
-      system_info = get("/nodes/#{system_id}/")
+      system_info = get("/nodes/#{machine_spec.reference['system_id']}")
 
       until system_info['netboot'] == false && system_info['power_state'] == 'on' do
         print(".")
@@ -127,8 +140,9 @@ module Chef::Provisioning
         system_info = get("/nodes/#{system_id}/")
       end
 
-      bootstrap_ip_address = JSON.parse(system_info.body)["ip_addresses"][0]
+      bootstrap_ip_address = system_info["ip_addresses"][0]
 
+      require 'pry'; binding.pry
       # Return the Machine object
       machine_for(machine_spec, machine_options)
     end
@@ -206,6 +220,17 @@ module Chef::Provisioning
         raise "No key found to connect to #{machine_spec.name} (#{machine_spec.reference.inspect})!"
       end
       result
+    end
+
+    def destroy_machine(action_handler, machine_spec, machine_options)
+      if machine_spec.reference
+        server_id = machine_spec.reference['server_id']
+        action_handler.perform_action "Release machine #{server_id}" do
+          post("/nodes/#{machine_spec.reference['system_id']}/", :release)
+          machine_spec.reference = nil
+          machine_spec.delete(action_handler)
+        end
+      end
     end
 
 
