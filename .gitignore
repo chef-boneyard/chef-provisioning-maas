@@ -27,3 +27,6 @@ docs/examples/clients
 docs/examples/nodes
 docs/examples/data_bags
 x.rb
+cookbooks/
+destroy_all.rb
+machines.rb

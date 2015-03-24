@@ -13,6 +13,7 @@ Gem::Specification.new do |s|
   s.homepage = 'https://github.com/chef-partners/chef-provisioning-maas'
 
   s.add_dependency 'chef', '>= 12.0.0'
+  s.add_dependency 'chef-provisioning', '>= 0.19.0'
   s.add_dependency 'oauth'
 
   s.add_development_dependency 'rspec', '~> 3.0'

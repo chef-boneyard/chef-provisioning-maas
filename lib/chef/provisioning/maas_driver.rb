@@ -1,8 +1,11 @@
-require 'chef/provisioning/driver'
-require 'oauth'
-require 'oauth/signature/plaintext'
 require 'chef/json_compat'
 require 'chef/knife'
+require 'chef/provisioning/convergence_strategy/install_sh'
+require 'chef/provisioning/driver'
+require 'chef/provisioning/transport/ssh'
+require 'chef/provisioning/machine/unix_machine'
+require 'oauth'
+require 'oauth/signature/plaintext'
 require 'readline'
 
 module Chef::Provisioning
@@ -140,86 +143,29 @@ module Chef::Provisioning
         system_info = get("/nodes/#{system_id}/")
       end
 
-      bootstrap_ip_address = system_info["ip_addresses"][0]
-
-      require 'pry'; binding.pry
       # Return the Machine object
       machine_for(machine_spec, machine_options)
     end
 
     def machine_for(machine_spec, machine_options, instance = nil)
-      instance ||= instance_for(machine_spec)
+      system_info = get("/nodes/#{machine_spec.reference['system_id']}")
+      server_id = machine_spec.reference['server_id']
+      bootstrap_ip_address = system_info["ip_addresses"][0]
+      username = `whoami`.delete!("\n")
+      ssh_options = {
+        :auth_methods => ['publickey']
+      }
+      options = {
+        :prefix => 'sudo ',
+        :ssh_pty_enable => true
+      }
 
-      if !instance
-        raise "Instance for node #{machine_spec.name} has not been created!"
-      end
+      transport = Chef::Provisioning::Transport::SSH.new(bootstrap_ip_address, username, ssh_options, options, config)
+      convergence_strategy = Chef::Provisioning::ConvergenceStrategy::InstallSh.new(machine_options[:convergence_options], {})
 
-      if machine_spec.reference['is_windows']
-        Chef::Provisioning::Machine::WindowsMachine.new(machine_spec, transport_for(machine_spec, machine_options, instance), convergence_strategy_for(machine_spec, machine_options))
-      else
-        Chef::Provisioning::Machine::UnixMachine.new(machine_spec, transport_for(machine_spec, machine_options, instance), convergence_strategy_for(machine_spec, machine_options))
-      end
-    end
+      sleep 45
 
-    def transport_for(machine_spec, machine_options, node)
-      if machine_spec.reference['is_windows']
-        create_winrm_transport(machine_spec, machine_options, node)
-      else
-        create_ssh_transport(machine_spec, machine_options, node)
-      end
-    end
-
-    def create_ssh_transport(machine_spec, machine_options, node)
-      ssh_options = ssh_options_for(machine_spec, machine_options)
-      username = node['owner'] || machine_options[:ssh_username] || default_ssh_username
-      if machine_options.has_key?(:ssh_username) && machine_options[:ssh_username] != machine_spec.reference['ssh_username']
-        Chef::Log.warn("Server #{machine_spec.name} was created with SSH username #{machine_spec.reference['ssh_username']} and machine_options specifies username #{machine_options[:ssh_username]}.  Using #{machine_spec.reference['ssh_username']}.  Please edit the node and change the chef_provisioning.reference.ssh_username attribute if you want to change it.")
-      end
-      options = {}
-      if machine_spec.reference[:sudo] || (!machine_spec.reference.has_key?(:sudo) && username != 'root')
-        options[:prefix] = 'sudo '
-      end
-
-      remote_host = determine_remote_host(machine_spec)
-
-      #Enable pty by default
-      options[:ssh_pty_enable] = true
-      options[:ssh_gateway] = machine_spec.reference['ssh_gateway'] if machine_spec.reference.has_key?('ssh_gateway')
-
-      Chef::Provisioning::Transport::SSH.new(remote_host, username, ssh_options, options, config)
-    end
-
-    def ssh_options_for(machine_spec, machine_options, instance)
-      result = {
-        # TODO create a user known hosts file
-        #          :user_known_hosts_file => vagrant_ssh_config['UserKnownHostsFile'],
-        #          :paranoid => true,
-        :auth_methods => [ 'publickey' ],
-        :keys_only => true
-      }.merge(machine_options[:ssh_options] || {})
-      if instance.respond_to?(:private_key) && instance.private_key
-        result[:key_data] = [ instance.private_key ]
-      elsif instance.respond_to?(:key_name) && instance.key_name
-        key = get_private_key(instance.key_name)
-        unless key
-          raise "Server has key name '#{instance.key_name}', but the corresponding private key was not found locally.  Check if the key is in Chef::Config.private_key_paths: #{Chef::Config.private_key_paths.join(', ')}"
-        end
-        result[:key_data] = [ key ]
-      elsif machine_spec.reference['key_name']
-        key = get_private_key(machine_spec.reference['key_name'])
-        unless key
-          raise "Server was created with key name '#{machine_spec.reference['key_name']}', but the corresponding private key was not found locally.  Check if the key is in Chef::Config.private_key_paths: #{Chef::Config.private_key_paths.join(', ')}"
-        end
-        result[:key_data] = [ key ]
-      elsif machine_options[:bootstrap_options] && machine_options[:bootstrap_options][:key_path]
-        result[:key_data] = [ IO.read(machine_options[:bootstrap_options][:key_path]) ]
-      elsif machine_options[:bootstrap_options] && machine_options[:bootstrap_options][:key_name]
-        result[:key_data] = [ get_private_key(machine_options[:bootstrap_options][:key_name]) ]
-      else
-        # TODO make a way to suggest other keys to try ...
-        raise "No key found to connect to #{machine_spec.name} (#{machine_spec.reference.inspect})!"
-      end
-      result
+      Chef::Provisioning::Machine::UnixMachine.new(machine_spec, transport, convergence_strategy)
     end
 
     def destroy_machine(action_handler, machine_spec, machine_options)
@@ -232,8 +178,5 @@ module Chef::Provisioning
         end
       end
     end
-
-
-
   end
 end
