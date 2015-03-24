@@ -10,7 +10,7 @@ Gem::Specification.new do |s|
   s.description = s.summary
   s.author = 'JJ Asghar'
   s.email = 'jj@chef.io'
-  s.homepage = 'https://github.com/chef-partners/chef-provisioning-maas'
+  s.homepage = 'https://github.com/jjasghar/chef-provisioning-maas'
 
   s.add_dependency 'chef', '>= 12.0.0'
   s.add_dependency 'chef-provisioning', '>= 0.19.0'
